@@ -232,7 +232,7 @@ function LeagueSummary({
 
   return (
     <>
-      <HomeHero year={year} />
+      <HomeHero year={year} records={records} />
 
       <PowerRankingsSection year={year} onSelectTeam={onSelectTeam}>
         <section className="roster-section">
@@ -295,7 +295,7 @@ function LeagueSummary({
   );
 }
 
-function HomeHero({ year }: { year: number }) {
+function HomeHero({ year, records }: { year: number; records: FleaflickerTeamRecord[] | null }) {
   const [board, setBoard] = useState<Scoreboard | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -308,6 +308,28 @@ function HomeHero({ year }: { year: number }) {
   const score = (n: number | null) => (n == null ? '—' : n.toFixed(1));
   const statusLabel = { final: 'Final', live: 'Live', upcoming: 'Upcoming' } as const;
 
+  // Game of the week: the matchup between the two best teams in the
+  // standings — lowest combined overall rank, most combined points as the
+  // tiebreak. Shown first, in a gold frame.
+  const recordFor = (name: string) => records?.find((r) => r.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const gotwId = useMemo(() => {
+    if (!board || !records) return null;
+    const rated = board.games
+      .map((g) => ({ g, a: recordFor(g.away.name), h: recordFor(g.home.name) }))
+      .filter((x) => x.a?.rank != null && x.h?.rank != null)
+      .sort(
+        (x, y) =>
+          x.a!.rank! + x.h!.rank! - (y.a!.rank! + y.h!.rank!) ||
+          y.a!.pointsFor + y.h!.pointsFor - (x.a!.pointsFor + x.h!.pointsFor),
+      );
+    return rated[0]?.g.id ?? null;
+  }, [board, records]);
+  const games = board ? [...board.games].sort((x, y) => Number(y.id === gotwId) - Number(x.id === gotwId)) : [];
+  const recordText = (name: string) => {
+    const r = recordFor(name);
+    return r ? `${r.wins}-${r.losses}${r.ties ? `-${r.ties}` : ''}` : '';
+  };
+
   return (
     <header className="home-hero">
       <div className="hero-field" aria-hidden="true" />
@@ -318,13 +340,15 @@ function HomeHero({ year }: { year: number }) {
         </p>
       </div>
       <div className="scoreboard">
-        {board?.games.map((g) => {
+        {games.map((g) => {
+          const featured = g.id === gotwId;
           const a = byName(g.away.name);
           const h = byName(g.home.name);
           const awayWin = g.status === 'final' && g.away.score != null && g.home.score != null && g.away.score > g.home.score;
           const homeWin = g.status === 'final' && g.away.score != null && g.home.score != null && g.home.score > g.away.score;
           return (
-            <div className={`score-tile ${g.status}`} key={g.id}>
+            <div className={`score-tile ${g.status} ${featured ? 'gotw' : ''}`} key={g.id}>
+              {featured && <span className="gotw-label">Game of the week</span>}
               <span className="score-status">{statusLabel[g.status]}</span>
               {[
                 { t: a, side: g.away, win: awayWin },
@@ -332,7 +356,10 @@ function HomeHero({ year }: { year: number }) {
               ].map(({ t, side, win }, i) => (
                 <div className={`score-line ${win ? 'win' : ''}`} key={i} style={{ ['--team' as any]: t?.accent ?? '#fcfcfc' }}>
                   {t && <img src={t.logo} alt="" />}
-                  <span className="score-team">{side.name}</span>
+                  <span className="score-team">
+                    {side.name}
+                    {featured && <span className="score-record"> {recordText(side.name)}</span>}
+                  </span>
                   <span className="score-pts">{score(side.score)}</span>
                 </div>
               ))}
