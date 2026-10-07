@@ -814,3 +814,7 @@ td.num {
 .schedule-matrix th, .schedule-matrix td { text-align: center; white-space: nowrap; }
 .schedule-matrix td:first-child { text-align: left; }
 .matrix-actual { outline: 2px solid var(--accent); outline-offset: -2px; font-weight: 700; }
+
+.fp-upload { gap: 12px; flex-wrap: wrap; }
+.fp-upload-btn { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.fp-unmatched { text-decoration: underline dotted; cursor: help; }
