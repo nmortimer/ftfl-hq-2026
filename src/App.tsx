@@ -212,6 +212,18 @@ function LeagueSummary({
     [contracts, year, records]
   );
 
+  // Playoff order: win % first, points for as the tiebreaker. Until records
+  // load, keep the default order.
+  const standings = useMemo(() => {
+    const pct = (r?: FleaflickerTeamRecord) => {
+      const g = r ? r.wins + r.losses + r.ties : 0;
+      return g ? (r!.wins + r!.ties / 2) / g : 0;
+    };
+    return records
+      ? [...rows].sort((a, b) => pct(b.record) - pct(a.record) || (b.record?.pointsFor ?? 0) - (a.record?.pointsFor ?? 0))
+      : rows;
+  }, [rows, records]);
+
   return (
     <>
       <HomeHero year={year} />
@@ -223,6 +235,7 @@ function LeagueSummary({
             <table>
               <thead>
                 <tr>
+                  <th>#</th>
                   <th>Team</th>
                   <th>Record</th>
                   <th>PF</th>
@@ -234,13 +247,14 @@ function LeagueSummary({
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ team, capUsed, capSpace, roster, taxi, ir, record }) => (
+                {standings.map(({ team, capUsed, capSpace, roster, taxi, ir, record }, i) => (
                   <tr
                     key={team.slug}
                     className="clickable-row"
                     style={{ ['--team' as any]: team.accent }}
                     onClick={() => onSelectTeam(team.slug)}
                   >
+                    <td className="num pr-rank">{records ? i + 1 : '—'}</td>
                     <td>
                       <div className="team-cell">
                         <img className="team-cell-logo" src={team.logo} alt="" />
@@ -264,7 +278,9 @@ function LeagueSummary({
               Records aren't loading — check that FLEAFLICKER_LEAGUE_ID is set on the server.
             </p>
           )}
-          <p className="footnote">Taxi squad and IR contracts don't count against the $200 cap.</p>
+          <p className="footnote">
+            Ordered by record, then points for. Taxi squad and IR contracts don't count against the $200 cap.
+          </p>
         </section>
       </PowerRankingsSection>
     </>
@@ -499,6 +515,56 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
       </section>
 
       {children}
+
+      {data?.draftOrder && (data.draftOrder.rows || data.draftOrder.error) && (
+        <section className="roster-section">
+          <h2 className="section-title">Projected draft order</h2>
+          <p className="section-note">
+            Lowest optimal points for picks first. Optimal points is the most a team could have scored each week with its
+            best lineup from starters and bench.
+          </p>
+          {data.draftOrder.error && <p className="login-error">Couldn't work out the draft order: {data.draftOrder.error}</p>}
+          {data.draftOrder.rows && (
+            <div className="table-scroll">
+              <table className="draft-order">
+                <thead>
+                  <tr>
+                    <th>Pick</th>
+                    <th>Team</th>
+                    <th>Optimal PF</th>
+                    <th>Actual PF</th>
+                    <th title="Actual points as a share of optimal points">Lineup efficiency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.draftOrder.rows.map((r, i) => {
+                    const t = teamBySlug(r.teamSlug);
+                    return (
+                      <tr
+                        key={r.teamSlug}
+                        className="clickable-row"
+                        style={{ ['--team' as any]: t.accent }}
+                        onClick={() => onSelectTeam(r.teamSlug)}
+                      >
+                        <td className={`num pr-rank ${i === 0 ? 'first' : ''}`}>{i + 1}</td>
+                        <td>
+                          <div className="team-cell">
+                            <img className="team-cell-logo" src={t.logo} alt="" />
+                            {t.name}
+                          </div>
+                        </td>
+                        <td className="num">{r.opf.toFixed(1)}</td>
+                        <td className="num">{r.pointsFor.toFixed(1)}</td>
+                        <td className="num">{r.opf ? `${Math.round((r.pointsFor / r.opf) * 100)}%` : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
 
       {data && data.weeksCounted.length > 0 && (
         <section className="roster-section">
