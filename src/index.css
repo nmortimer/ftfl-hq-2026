@@ -818,3 +818,337 @@ td.num {
 .fp-upload { gap: 12px; flex-wrap: wrap; }
 .fp-upload-btn { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
 .fp-unmatched { text-decoration: underline dotted; cursor: help; }
+
+/* =====================================================================
+   Home page — Tecmo-style. Scoped to .home so team pages keep their own
+   team colors. Pixel type (Press Start 2P) only for display: title,
+   scores, ranks, section heads. Tables stay in Barlow Condensed so the
+   numbers are readable.
+   ===================================================================== */
+.home {
+  --nes-black: #000000;
+  --nes-white: #fcfcfc;
+  --tecmo-blue: #0b2fa8;
+  --tecmo-blue-deep: #071d6e;
+  --turf: #1b7a2d;
+  --turf-light: #228a37;
+  --gold: #f8b800;
+  --nes-red: #e8452c;
+  --pixel: 'Press Start 2P', monospace;
+  --surface: var(--tecmo-blue);
+  --surface-2: #1a43c9;
+  --row-tint: var(--tecmo-blue-deep);
+  --border: var(--nes-white);
+  --text: var(--nes-white);
+  --text-muted: #b9c4ee;
+  --danger: var(--nes-red);
+  background: var(--nes-black);
+  color: var(--nes-white);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 17px;
+}
+
+.home :focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* ---- Hero: a field with a scoreboard ---- */
+.home-hero {
+  position: relative;
+  margin: 4px 0 36px;
+  padding: 36px clamp(16px, 6vw, 96px) 28px;
+  border: 4px solid var(--nes-white);
+  box-shadow: 0 0 0 4px var(--nes-black), 0 0 0 8px var(--tecmo-blue);
+  overflow: hidden;
+}
+
+.hero-field {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    /* end zones */
+    linear-gradient(90deg, var(--tecmo-blue) 0 5%, transparent 5% 95%, var(--nes-red) 95%),
+    /* yard lines every 10 yards */
+    repeating-linear-gradient(90deg, transparent 0 calc(9% - 2px), rgba(252, 252, 252, 0.55) calc(9% - 2px) 9%),
+    /* mowed stripes */
+    repeating-linear-gradient(90deg, var(--turf) 0 9%, var(--turf-light) 9% 18%);
+  background-position: 0 0, 5% 0, 5% 0;
+}
+
+.hero-title,
+.scoreboard {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-title h1 {
+  margin: 0;
+  font-family: var(--pixel);
+  font-weight: 400;
+  font-size: clamp(56px, 12vw, 132px);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--nes-white);
+  text-shadow: 6px 6px 0 var(--nes-black);
+}
+
+.hero-title p {
+  margin: 14px 0 26px;
+  font-family: var(--pixel);
+  font-size: clamp(10px, 1.4vw, 14px);
+  color: var(--gold);
+  text-shadow: 2px 2px 0 var(--nes-black);
+}
+
+.scoreboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.score-tile {
+  background: var(--nes-black);
+  border: 3px solid var(--nes-white);
+  padding: 10px 12px 8px;
+}
+
+.score-status {
+  display: block;
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.score-tile.live .score-status {
+  color: var(--gold);
+  animation: tecmo-blink 1s steps(1) infinite;
+}
+
+.score-line {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0 3px 8px;
+  border-left: 4px solid var(--team);
+}
+
+.score-line img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.score-team {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-pts {
+  font-family: var(--pixel);
+  font-size: 12px;
+  color: var(--nes-white);
+  font-variant-numeric: tabular-nums;
+}
+
+.score-line.win .score-pts {
+  color: var(--gold);
+}
+
+.score-tile.final .score-line:not(.win) .score-team {
+  color: var(--text-muted);
+}
+
+.hero-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 16px;
+  color: var(--nes-white);
+  text-shadow: 1px 1px 0 var(--nes-black);
+}
+
+@keyframes tecmo-blink {
+  50% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .score-tile.live .score-status { animation: none; }
+}
+
+/* ---- Sections: Tecmo menu boxes ---- */
+.home .roster-section {
+  margin-bottom: 40px;
+}
+
+.home .section-title {
+  display: block;
+  margin: 0 0 14px;
+  padding: 0;
+  font-family: var(--pixel);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--gold);
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+.home table {
+  font-size: 17px;
+  background: var(--tecmo-blue);
+  border: 3px solid var(--nes-white);
+  border-radius: 0;
+  box-shadow: 0 0 0 3px var(--nes-black), 0 0 0 6px var(--tecmo-blue);
+  margin: 6px 0;
+}
+
+.home th {
+  background: var(--nes-black);
+  color: var(--nes-white);
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 3px solid var(--nes-white);
+}
+
+.home td {
+  border-bottom: 1px solid rgba(252, 252, 252, 0.18);
+}
+
+.home tbody tr:nth-child(even) td {
+  background: var(--tecmo-blue-deep);
+}
+
+.home .clickable-row:hover td {
+  background: var(--surface-2);
+}
+
+.home tbody td:first-child {
+  box-shadow: inset 5px 0 0 var(--team, transparent);
+}
+
+.home td.num {
+  font-weight: 600;
+}
+
+.home .team-cell {
+  font-weight: 600;
+}
+
+.home .team-cell-logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 0;
+}
+
+.home .pr-rank {
+  font-family: var(--pixel);
+  font-size: 14px;
+  font-weight: 400;
+  width: 1%;
+  padding-left: 18px;
+}
+
+.home .pr-rank.first {
+  color: var(--gold);
+}
+
+/* ---- Power rankings tools ---- */
+.pr-tools {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.pr-how {
+  flex: 0 1 auto;
+  max-width: 72ch;
+  font-size: 16px;
+}
+
+.pr-how summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.pr-how p {
+  margin: 6px 0 0;
+  line-height: 1.4;
+}
+
+.home .btn-tiny,
+.home .fp-upload-btn {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--nes-white);
+  background: var(--nes-black);
+  border: 2px solid var(--nes-white);
+  border-radius: 0;
+  padding: 4px 12px;
+}
+
+.home .btn-tiny:hover,
+.home .fp-upload-btn:hover {
+  background: var(--tecmo-blue);
+}
+
+.home .fp-upload-btn .muted {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.home .footnote,
+.home .sync-line {
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.home .login-error {
+  color: var(--nes-red);
+}
+
+.home .matrix-actual {
+  outline-color: var(--nes-white);
+  outline-width: 3px;
+}
+
+@media (max-width: 560px) {
+  .home-hero { padding: 24px 16px 18px; }
+  .hero-title h1 { text-shadow: 4px 4px 0 var(--nes-black); }
+  .home .section-title { font-size: 12px; }
+}
+
+/* Matrix: three tiers from the Tecmo palette — bad schedule luck in deep
+   blue, neutral in menu blue, great in gold. */
+.home tbody tr td.matrix-cell.cold { background: #071d6e; }
+.home tbody tr td.matrix-cell.mid { background: #2450d8; }
+.home tbody tr td.matrix-cell.hot { background: #f8b800; color: #000000; }
+.home .table-scroll table {
+  box-shadow: none;
+}
+.home .team-rail {
+  background: var(--nes-black);
+  border: 3px solid var(--nes-white);
+  border-radius: 0;
+}
+.home .team-chip {
+  border-radius: 0;
+  background: var(--tecmo-blue-deep);
+}
+.home .commissioner-btn,
+.home .rail-year select {
+  border-radius: 0;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 15px;
+}
