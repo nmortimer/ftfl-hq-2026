@@ -1,4 +1,4 @@
-\{
+{
   "functions": {
     "api/compute-top-scorers.ts": {
       "maxDuration": 60
