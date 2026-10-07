@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { realContracts } from './data/realContracts';
 import { teams, teamBySlug } from './data/teams';
 import {
@@ -8,6 +8,8 @@ import {
   fetchLeagueHistory,
   fetchRosterCheck,
   fetchPowerRankings,
+  fetchCurrentScoreboard,
+  Scoreboard,
   PowerRankings,
   parseFpCsv,
   uploadFpRankings,
@@ -103,10 +105,12 @@ export default function App() {
   const themeVars =
     mode === 'team'
       ? { ['--bg' as any]: team.bg, ['--accent' as any]: team.accent, ['--accent2' as any]: team.accent2, ['--on-accent' as any]: team.onAccent }
-      : { ['--bg' as any]: '#14161a', ['--accent' as any]: '#7f8a9e', ['--accent2' as any]: '#7f8a9e', ['--on-accent' as any]: '#0b0c10' };
+      : mode === 'summary'
+        ? { ['--bg' as any]: '#000000', ['--accent' as any]: '#0b2fa8', ['--accent2' as any]: '#fcfcfc', ['--on-accent' as any]: '#fcfcfc' }
+        : { ['--bg' as any]: '#14161a', ['--accent' as any]: '#7f8a9e', ['--accent2' as any]: '#7f8a9e', ['--on-accent' as any]: '#0b0c10' };
 
   return (
-    <div className="page" style={themeVars}>
+    <div className={`page ${mode === 'summary' ? 'home' : ''}`} style={themeVars}>
       <nav className="team-rail">
         <button
           className={`team-chip summary-chip ${mode === 'summary' ? 'active' : ''}`}
@@ -210,58 +214,111 @@ function LeagueSummary({
 
   return (
     <>
-      <header className="page-header summary-header">
-        <div>
-          <h1>League summary — {year}</h1>
-          <p className="sub">Click a team to open its full page.</p>
-        </div>
-      </header>
+      <HomeHero year={year} />
 
-      <table>
-        <thead>
-          <tr>
-            <th>Team</th>
-            <th>Record</th>
-            <th>PF</th>
-            <th>Roster</th>
-            <th>Taxi</th>
-            <th>IR</th>
-            <th>Cap used</th>
-            <th>Cap space</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({ team, capUsed, capSpace, roster, taxi, ir, record }) => (
-            <tr key={team.slug} className="clickable-row" onClick={() => onSelectTeam(team.slug)}>
-              <td>
-                <div className="team-cell">
-                  <span className="swatch" style={{ background: team.accent }} />
-                  <img className="team-cell-logo" src={team.logo} alt="" />
-                  {team.name}
-                </div>
-              </td>
-              <td className="num">{record ? `${record.wins}-${record.losses}${record.ties ? `-${record.ties}` : ''}` : '—'}</td>
-              <td className="num">{record ? record.pointsFor.toFixed(1) : '—'}</td>
-              <td className="num">{roster}</td>
-              <td className={`num ${taxi > MAX_TAXI_SPOTS ? 'over' : ''}`}>{taxi}</td>
-              <td className="num">{ir}</td>
-              <td className="num">{money(capUsed)}</td>
-              <td className={`num ${capSpace < 0 ? 'over' : ''}`}>{money(capSpace)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {fleaflickerError && (
-        <p className="footnote">
-          Live records aren't connected yet — set FLEAFLICKER_LEAGUE_ID on the server to pull real
-          scores/standings here.
-        </p>
-      )}
-      <p className="footnote">Taxi squad and IR contracts don't count against the $200 cap.</p>
-
-      <PowerRankingsSection year={year} onSelectTeam={onSelectTeam} />
+      <PowerRankingsSection year={year} onSelectTeam={onSelectTeam}>
+        <section className="roster-section">
+          <h2 className="section-title">Standings and cap</h2>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Team</th>
+                  <th>Record</th>
+                  <th>PF</th>
+                  <th>Roster</th>
+                  <th>Taxi</th>
+                  <th>IR</th>
+                  <th>Cap used</th>
+                  <th>Cap space</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(({ team, capUsed, capSpace, roster, taxi, ir, record }) => (
+                  <tr
+                    key={team.slug}
+                    className="clickable-row"
+                    style={{ ['--team' as any]: team.accent }}
+                    onClick={() => onSelectTeam(team.slug)}
+                  >
+                    <td>
+                      <div className="team-cell">
+                        <img className="team-cell-logo" src={team.logo} alt="" />
+                        {team.name}
+                      </div>
+                    </td>
+                    <td className="num">{record ? `${record.wins}-${record.losses}${record.ties ? `-${record.ties}` : ''}` : '—'}</td>
+                    <td className="num">{record ? record.pointsFor.toFixed(1) : '—'}</td>
+                    <td className="num">{roster}</td>
+                    <td className={`num ${taxi > MAX_TAXI_SPOTS ? 'over' : ''}`}>{taxi}</td>
+                    <td className="num">{ir}</td>
+                    <td className="num">{money(capUsed)}</td>
+                    <td className={`num ${capSpace < 0 ? 'over' : ''}`}>{money(capSpace)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {fleaflickerError && (
+            <p className="footnote">
+              Records aren't loading — check that FLEAFLICKER_LEAGUE_ID is set on the server.
+            </p>
+          )}
+          <p className="footnote">Taxi squad and IR contracts don't count against the $200 cap.</p>
+        </section>
+      </PowerRankingsSection>
     </>
+  );
+}
+
+function HomeHero({ year }: { year: number }) {
+  const [board, setBoard] = useState<Scoreboard | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setBoard(null);
+    setFailed(false);
+    fetchCurrentScoreboard(year).then((b) => (b ? setBoard(b) : setFailed(true)));
+  }, [year]);
+
+  const byName = (name: string) => teams.find((t) => t.name.trim().toLowerCase() === name.trim().toLowerCase());
+  const score = (n: number | null) => (n == null ? '—' : n.toFixed(1));
+  const statusLabel = { final: 'Final', live: 'Live', upcoming: 'Upcoming' } as const;
+
+  return (
+    <header className="home-hero">
+      <div className="hero-field" aria-hidden="true" />
+      <div className="hero-title">
+        <h1>FTFL</h1>
+        <p>
+          {year} season{board?.week ? `, week ${board.week}` : ''}
+        </p>
+      </div>
+      <div className="scoreboard">
+        {board?.games.map((g) => {
+          const a = byName(g.away.name);
+          const h = byName(g.home.name);
+          const awayWin = g.status === 'final' && g.away.score != null && g.home.score != null && g.away.score > g.home.score;
+          const homeWin = g.status === 'final' && g.away.score != null && g.home.score != null && g.home.score > g.away.score;
+          return (
+            <div className={`score-tile ${g.status}`} key={g.id}>
+              <span className="score-status">{statusLabel[g.status]}</span>
+              {[
+                { t: a, side: g.away, win: awayWin },
+                { t: h, side: g.home, win: homeWin },
+              ].map(({ t, side, win }, i) => (
+                <div className={`score-line ${win ? 'win' : ''}`} key={i} style={{ ['--team' as any]: t?.accent ?? '#fcfcfc' }}>
+                  {t && <img src={t.logo} alt="" />}
+                  <span className="score-team">{side.name}</span>
+                  <span className="score-pts">{score(side.score)}</span>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+        {!board && !failed && <p className="hero-note">Loading this week's games…</p>}
+        {failed && <p className="hero-note">This week's games aren't loading from Fleaflicker right now.</p>}
+      </div>
+    </header>
   );
 }
 
@@ -276,7 +333,7 @@ const COMPONENT_LABELS: Record<string, string> = {
   dynastyStrength: 'Dynasty (FP)',
 };
 
-function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTeam: (slug: string) => void }) {
+function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; onSelectTeam: (slug: string) => void; children?: ReactNode }) {
   const [data, setData] = useState<PowerRankings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -321,16 +378,21 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
     <>
       <section className="roster-section">
         <h2 className="section-title">Power rankings</h2>
-        <p className="section-note">
-          Each factor ranks the 10 teams 1–10; power score is the weighted average rank (lower is better). ROS strength
-          counts most (2×), PF and all-play 1.5×, PA least (0.5×). ROS /100 rates each team's best starting lineup only;
-          dynasty /100 is the best lineup plus a little depth (top 6 bench at 30%). Factors:{' '}
-          {data ? data.activeComponents.map((k) => COMPONENT_LABELS[k] ?? k).join(', ') : '…'}
-          {data && !data.last5Active && ` (Last 5 kicks in at week 8)`}.{' '}
+        <div className="pr-tools">
+          <details className="pr-how">
+            <summary>How it's scored</summary>
+            <p>
+              Each factor ranks the 10 teams 1–10; the power score is the weighted average rank, so lower is better. ROS
+              strength counts most (2×), PF and all-play 1.5×, PA least (0.5×). ROS /100 rates each team's best starting
+              lineup only; dynasty /100 is the best lineup plus a little depth (top 6 bench at 30%). Factors in use:{' '}
+              {data ? data.activeComponents.map((k) => COMPONENT_LABELS[k] ?? k).join(', ') : '…'}
+              {data && !data.last5Active && ' (last 5 kicks in at week 8)'}.
+            </p>
+          </details>
           <button className="btn-tiny" onClick={() => load(true)} disabled={loading}>
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
-        </p>
+        </div>
         <div className="add-form-row fp-upload">
           {(['dynasty', 'ros'] as FpKind[]).map((kind) => (
             <label key={kind} className="btn-tiny fp-upload-btn">
@@ -375,8 +437,13 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
                 {data.rows.map((r, i) => {
                   const t = teamBySlug(r.teamSlug);
                   return (
-                    <tr key={r.teamSlug} className="clickable-row" onClick={() => onSelectTeam(r.teamSlug)}>
-                      <td className="num">{i + 1}</td>
+                    <tr
+                      key={r.teamSlug}
+                      className="clickable-row"
+                      style={{ ['--team' as any]: t.accent }}
+                      onClick={() => onSelectTeam(r.teamSlug)}
+                    >
+                      <td className={`num pr-rank ${i === 0 ? 'first' : ''}`}>{i + 1}</td>
                       <td>
                         <div className="team-cell">
                           <img className="team-cell-logo" src={t.logo} alt="" />
@@ -431,6 +498,8 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
         )}
       </section>
 
+      {children}
+
       {data && data.weeksCounted.length > 0 && (
         <section className="roster-section">
           <h2 className="section-title">If you had their schedule</h2>
@@ -467,8 +536,7 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
                       return (
                         <td
                           key={c.slug}
-                          className={`num matrix-cell ${r.slug === c.slug ? 'matrix-actual' : ''}`}
-                          style={{ background: `rgba(${Math.round(220 - 160 * pct)}, ${Math.round(60 + 140 * pct)}, 90, 0.35)` }}
+                          className={`num matrix-cell ${r.slug === c.slug ? 'matrix-actual' : ''} ${pct >= 0.65 ? 'hot' : pct > 0.35 ? 'mid' : 'cold'}`}
                           title={`${r.name} with ${c.name}'s schedule`}
                         >
                           {rec(m)}
