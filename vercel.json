@@ -67,10 +67,6 @@
     {
       "source": "/api/repair-taxi-ir",
       "destination": "/api/admin?action=repair-taxi-ir"
-    },
-    {
-      "source": "/api/fp-raw",
-      "destination": "/api/power-rankings?debug=fp"
     }
   ]
 }
