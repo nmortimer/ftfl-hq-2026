@@ -11,18 +11,16 @@ import { fetchRosterMap, normalize } from './sync.js';
  *   W, L, PF, PA, all-play wins, last-5 record (counts from week 8 on),
  *   and the schedule matrix. Only weeks where EVERY game is final count.
  *
- * FantasyPros (consensus-rankings, key in FANTASYPROS_API_KEY):
- *   ROS strength + dynasty strength = sum of rank value for every player on
- *   a team's current Fleaflicker roster, plus top-25/50/100 counts.
+ * FantasyPros (CSV uploads — the free API key is capped at 10 players):
+ *   The commissioner uploads FP's Dynasty and ROS "ALL" CSV exports on the
+ *   league summary page. The browser parses them and POSTs
+ *   { kind, fileName, players: [{ name, rank, pos }] } here; stored in
+ *   Redis (ftfl:fp-upload:dynasty / :ros) and used until the next upload.
+ *   Each list feeds its own factor, so one can be uploaded without the other.
  *
- * UNCONFIRMED until checked against a real response — each one fails
- * loudly with a raw sample instead of producing silent wrong numbers:
- *   1. Fleaflicker weekly score path: game.homeScore.score.value
- *   2. FantasyPros `type` values for dynasty / ROS (FP_QUERIES below).
- *      If both types return the same top 10, the type is being ignored
- *      and FP strength is reported as unconfirmed.
- *   3. Free FP keys may return SAMPLE data — the UI shows how many FP
- *      players came back so this is visible.
+ * UNCONFIRMED until checked against a real response:
+ *   Fleaflicker weekly score path game.homeScore.score.value — fails
+ *   loudly with a raw sample game if wrong.
  *
  * Cached 3h in Redis; ?refresh=1 forces a rebuild.
  */
@@ -55,11 +53,6 @@ const playerValue = (rank: number | undefined) => (rank ? 100 * Math.pow(0.985, 
 // Capped so a full roster isn't rewarded for sheer size. ROS = starters only.
 const DYNASTY_BENCH_COUNT = 6;
 const DYNASTY_BENCH_WEIGHT = 0.3;
-// 1QB league (not superflex). Scoring defaults to PPR — change if FTFL is half/standard.
-const FP_QUERIES = {
-  dynasty: 'type=dynasty&position=ALL&scoring=PPR',
-  ros: 'type=ros&position=ALL&scoring=PPR',
-};
 const CACHE_HOURS = 3;
 // -------------------------------------------------------------------------
 
@@ -91,28 +84,30 @@ function bestLineup(players: { name: string; pos: string; value: number }[]) {
 interface FpPlayer {
   name: string;
   rank: number;
+  pos?: string;
 }
+type FpKind = 'dynasty' | 'ros';
+interface FpUpload {
+  uploadedAt: number;
+  fileName: string;
+  players: FpPlayer[];
+}
+const fpKey = (kind: FpKind) => `ftfl:fp-upload:${kind}`;
 
-async function fetchFp(season: number, query: string): Promise<{ players: FpPlayer[]; topKeys: string[]; sample: unknown }> {
-  const key = process.env.FANTASYPROS_API_KEY;
-  if (!key) throw new Error('FANTASYPROS_API_KEY is not set on the server.');
-  const cacheKey = `ftfl:fp:${season}:${query}`;
-  const cached = await getJSON<{ at: number; players: FpPlayer[]; topKeys: string[]; sample: unknown }>(cacheKey);
-  if (cached && Date.now() - cached.at < 12 * 3600_000) return cached;
-
-  const res = await fetch(`https://api.fantasypros.com/public/v2/json/nfl/${season}/consensus-rankings?${query}`, {
-    headers: { 'x-api-key': key },
-  });
-  if (!res.ok) throw new Error(`FantasyPros ${query} failed (HTTP ${res.status})`);
-  const data: any = await res.json();
-  // Confirmed from FantasyPros' own sample: { players: [{ rank_ecr, player_name, ... }] }
-  const raw: any[] = data?.players ?? [];
-  const players = raw
-    .map((p) => ({ name: String(p?.player_name ?? ''), rank: Number(p?.rank_ecr) }))
-    .filter((p) => p.name && Number.isFinite(p.rank));
-  const out = { at: Date.now(), players, topKeys: Object.keys(data ?? {}), sample: raw.slice(0, 2) };
-  if (players.length > 0) await setJSON(cacheKey, out);
-  return out;
+/** POST { kind, fileName, players } — saves one uploaded FantasyPros list. */
+async function saveFpUpload(req: VercelRequest, res: VercelResponse, cacheKey: string) {
+  const { kind, fileName, players } = (req.body ?? {}) as { kind?: string; fileName?: string; players?: unknown };
+  if (kind !== 'dynasty' && kind !== 'ros') return res.status(400).json({ error: 'kind must be "dynasty" or "ros"' });
+  if (!Array.isArray(players)) return res.status(400).json({ error: 'players must be an array' });
+  const clean: FpPlayer[] = players
+    .map((p: any) => ({ name: String(p?.name ?? '').trim(), rank: Number(p?.rank), pos: p?.pos ? String(p.pos) : undefined }))
+    .filter((p) => p.name && Number.isFinite(p.rank) && p.rank > 0);
+  // Real exports are 400-600 rows; anything tiny is the wrong file or a bad parse.
+  if (clean.length < 50) return res.status(400).json({ error: `Only ${clean.length} valid rows — is this the full "ALL" export?` });
+  const upload: FpUpload = { uploadedAt: Date.now(), fileName: String(fileName ?? ''), players: clean };
+  await setJSON(fpKey(kind), upload);
+  await setJSON(cacheKey, null); // next GET rebuilds with the new ranks
+  return res.status(200).json({ ok: true, kind, count: clean.length });
 }
 
 function rankTeams(values: Map<string, number>, higherIsBetter: boolean): Map<string, number> {
@@ -133,24 +128,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const season = Number(req.query.year) || currentNflSeason();
   const cacheKey = `ftfl:power-rankings:${season}`;
 
-  // Debug: raw FantasyPros check, e.g. ?debug=fp&q=type=dynasty%26position=ALL%26scoring=PPR
-  // (folded in here instead of its own function — Hobby plan's 12-function cap).
-  if (req.query.debug === 'fp') {
-    const key = process.env.FANTASYPROS_API_KEY;
-    if (!key) return res.status(400).json({ error: 'FANTASYPROS_API_KEY is not set on the server.' });
-    const q = String(req.query.q ?? 'position=ALL&scoring=PPR');
-    const r = await fetch(`https://api.fantasypros.com/public/v2/json/nfl/${season}/consensus-rankings?${q}`, { headers: { 'x-api-key': key } });
-    const body: any = await r.json().catch(() => null);
-    const { players, ...meta } = body ?? {};
-    return res.status(r.status).json({
-      request: `/nfl/${season}/consensus-rankings?${q}`,
-      status: r.status,
-      topLevelKeys: Object.keys(body ?? {}),
-      meta,
-      playerCount: Array.isArray(players) ? players.length : null,
-      firstPlayers: Array.isArray(players) ? players.slice(0, 3) : body,
-    });
-  }
+  if (req.method === 'POST') return saveFpUpload(req, res, cacheKey);
 
   if (req.query.refresh !== '1') {
     const cached = await getJSON<any>(cacheKey);
@@ -258,28 +236,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // ---- FantasyPros strength ---------------------------------------------
+  // ---- FantasyPros strength (from uploaded CSVs) --------------------------
+  const meta = (u: FpUpload | null) => (u ? { uploadedAt: u.uploadedAt, fileName: u.fileName, count: u.players.length } : null);
   let fp: {
-    ok: boolean;
+    dynasty: ReturnType<typeof meta>;
+    ros: ReturnType<typeof meta>;
     error?: string;
-    warning?: string;
-    playerCounts?: { dynasty: number; ros: number };
     strength?: Record<string, TeamStrength>;
-    debug?: unknown;
-  } = { ok: false };
+    unmatched?: Record<string, string[]>;
+  } = { dynasty: null, ros: null };
   try {
-    const [dyn, ros] = await Promise.all([fetchFp(season, FP_QUERIES.dynasty), fetchFp(season, FP_QUERIES.ros)]);
-    if (dyn.players.length === 0 || ros.players.length === 0) {
-      fp = { ok: false, error: 'FantasyPros returned no players — check the type params against a real response.', debug: { dynasty: dyn, ros } };
-    } else {
+    const [dyn, ros] = await Promise.all([getJSON<FpUpload>(fpKey('dynasty')), getJSON<FpUpload>(fpKey('ros'))]);
+    fp = { dynasty: meta(dyn), ros: meta(ros) };
+    if (dyn || ros) {
       const roster = (await fetchRosterMap(leagueId, season)).map;
-      const dynRank = new Map(dyn.players.map((p) => [normalize(p.name), p.rank]));
-      const rosRank = new Map(ros.players.map((p) => [normalize(p.name), p.rank]));
+      const dynRank = new Map((dyn?.players ?? []).map((p) => [normalize(p.name), p.rank]));
+      const rosRank = new Map((ros?.players ?? []).map((p) => [normalize(p.name), p.rank]));
       // Each team's current Fleaflicker roster, with positions from Fleaflicker.
       const byTeam = new Map(slugs.map((sl) => [sl, [] as { key: string; name: string; pos: string }[]]));
       for (const [key, info] of roster) byTeam.get(info.teamSlug)?.push({ key, name: info.playerName, pos: info.position ?? '' });
 
       const raw = new Map<string, { dyn: number; ros: number; rosStarters: string[]; dynastyStarters: string[]; dynastyTop: [number, number, number]; rosTop: [number, number, number]; matched: number }>();
+      const unmatched: Record<string, string[]> = {};
       const topCounts = (ranks: (number | undefined)[]): [number, number, number] => [
         ranks.filter((r) => r != null && r <= 25).length,
         ranks.filter((r) => r != null && r <= 50).length,
@@ -292,12 +270,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         raw.set(sl, {
           ros: rosL.value,
           dyn: dynL.value + depth,
-          rosStarters: rosL.starters.map((p) => p.name),
-          dynastyStarters: dynL.starters.map((p) => p.name),
+          rosStarters: rosL.starters.filter((p) => p.value > 0).map((p) => p.name),
+          dynastyStarters: dynL.starters.filter((p) => p.value > 0).map((p) => p.name),
           dynastyTop: topCounts(players.map((p) => dynRank.get(p.key))),
           rosTop: topCounts(players.map((p) => rosRank.get(p.key))),
           matched: players.filter((p) => dynRank.has(p.key)).length,
         });
+        // Offensive players missing from the dynasty list — usually deep
+        // stashes, but a known name here means a name mismatch to fix.
+        if (dyn) unmatched[sl] = players.filter((p) => ['QB', 'RB', 'WR', 'TE'].includes(p.pos) && !dynRank.has(p.key)).map((p) => p.name);
       }
       const maxRos = Math.max(...[...raw.values()].map((r) => r.ros), 1);
       const maxDyn = Math.max(...[...raw.values()].map((r) => r.dyn), 1);
@@ -313,21 +294,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           matched: r.matched,
         };
       }
-      const sameTop10 =
-        dyn.players.slice(0, 10).map((p) => p.name).join('|') === ros.players.slice(0, 10).map((p) => p.name).join('|');
-      fp = {
-        ok: true,
-        playerCounts: { dynasty: dyn.players.length, ros: ros.players.length },
-        strength,
-        warning: sameTop10
-          ? 'Dynasty and ROS came back with the identical top 10 — the type parameter may be ignored. Strength numbers are unconfirmed.'
-          : dyn.players.length < 100
-            ? `Only ${dyn.players.length} FantasyPros players returned — this may be sample data (free keys).`
-            : undefined,
-      };
+      fp.strength = strength;
+      fp.unmatched = unmatched;
     }
   } catch (err: any) {
-    fp = { ok: false, error: err?.message };
+    fp.error = err?.message;
   }
 
   // ---- Power score --------------------------------------------------------
@@ -347,13 +318,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       key: 'rosStrength',
       values: new Map(slugs.map((s) => [s, fp.strength?.[s]?.ros ?? 0])),
       higherIsBetter: true,
-      active: fp.ok,
+      active: Boolean(fp.ros && fp.strength),
     },
     {
       key: 'dynastyStrength',
       values: new Map(slugs.map((s) => [s, fp.strength?.[s]?.dynasty ?? 0])),
       higherIsBetter: true,
-      active: fp.ok,
+      active: Boolean(fp.dynasty && fp.strength),
     },
   ];
   const active = components.filter((c) => c.active && WEIGHTS[c.key] > 0 && (c.key.endsWith('Strength') || weeks.length > 0));
@@ -390,7 +361,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     weights: WEIGHTS,
     rows,
     matrix,
-    fp: { ok: fp.ok, error: fp.error, warning: fp.warning, playerCounts: fp.playerCounts, debug: fp.debug },
+    fp: { dynasty: fp.dynasty, ros: fp.ros, error: fp.error, unmatched: fp.unmatched },
   };
   await setJSON(cacheKey, result);
   return res.status(200).json(result);
