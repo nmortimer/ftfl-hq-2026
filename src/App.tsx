@@ -9,6 +9,10 @@ import {
   fetchRosterCheck,
   fetchPowerRankings,
   PowerRankings,
+  parseFpCsv,
+  uploadFpRankings,
+  FpKind,
+  FpUploadMeta,
   RosterCheck,
   fetchTopScorers,
   FleaflickerActivityItem,
@@ -290,6 +294,26 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
     load();
   }, [year]);
 
+  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
+  const [uploading, setUploading] = useState<FpKind | null>(null);
+  async function handleUpload(kind: FpKind, file: File | undefined) {
+    if (!file) return;
+    setUploadMsg(null);
+    const parsed = parseFpCsv(await file.text(), kind);
+    if (parsed.error) return setUploadMsg(parsed.error);
+    setUploading(kind);
+    const r = await uploadFpRankings(year, kind, file.name, parsed.players);
+    setUploading(null);
+    if (!r.ok) return setUploadMsg(`Upload failed: ${r.error}`);
+    setUploadMsg(`${kind === 'dynasty' ? 'Dynasty' : 'ROS'} ranks updated — ${r.count} players.`);
+    load(true);
+  }
+  const uploadStatus = (m: FpUploadMeta | null | undefined) =>
+    m
+      ? `${m.count} players, uploaded ${new Date(m.uploadedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+      : 'not uploaded';
+  const unmatchedTotal = Object.values(data?.fp.unmatched ?? {}).reduce((a, l) => a + l.length, 0);
+
   const rec = (r: { wins: number; losses: number; ties: number }) => `${r.wins}-${r.losses}${r.ties ? `-${r.ties}` : ''}`;
   const top = (t: [number, number, number] | undefined) => (t ? `${t[0]} / ${t[1]} / ${t[2]}` : '—');
 
@@ -307,9 +331,27 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
         </p>
+        <div className="add-form-row fp-upload">
+          {(['dynasty', 'ros'] as FpKind[]).map((kind) => (
+            <label key={kind} className="btn-tiny fp-upload-btn">
+              {uploading === kind ? 'Uploading…' : `Upload ${kind === 'dynasty' ? 'Dynasty' : 'ROS'} CSV`}
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                hidden
+                disabled={uploading !== null}
+                onChange={(e) => {
+                  handleUpload(kind, e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+              <span className="muted"> {uploadStatus(data?.fp[kind])}</span>
+            </label>
+          ))}
+        </div>
+        {uploadMsg && <p className="sync-line">{uploadMsg}</p>}
         {error && <p className="login-error">{error}</p>}
-        {data?.fp && !data.fp.ok && <p className="login-error">FantasyPros: {data.fp.error}</p>}
-        {data?.fp?.warning && <p className="login-error">FantasyPros: {data.fp.warning}</p>}
+        {data?.fp?.error && <p className="login-error">FantasyPros: {data.fp.error}</p>}
         {data && (
           <div className="table-scroll">
             <table>
@@ -372,8 +414,19 @@ function PowerRankingsSection({ year, onSelectTeam }: { year: number; onSelectTe
         {data && (
           <p className="footnote">
             Weeks counted: {data.weeksCounted.length ? data.weeksCounted.join(', ') : 'none final yet'}.
-            {data.fp.playerCounts && ` FantasyPros players: ${data.fp.playerCounts.dynasty} dynasty, ${data.fp.playerCounts.ros} ROS.`} Hover a
-            score for each factor's rank.
+            Hover a score for each factor's rank.{' '}
+            {unmatchedTotal > 0 && (
+              <span
+                className="fp-unmatched"
+                title={Object.entries(data.fp.unmatched ?? {})
+                  .filter(([, l]) => l.length)
+                  .map(([slug, l]) => `${teamBySlug(slug).name}: ${l.join(', ')}`)
+                  .join('\n')}
+              >
+                {unmatchedTotal} rostered players aren't in the dynasty CSV (hover to see who) — deep stashes are expected, a known name
+                means a name mismatch.
+              </span>
+            )}
           </p>
         )}
       </section>
