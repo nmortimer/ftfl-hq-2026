@@ -413,3 +413,40 @@ export async function fetchPowerRankings(year: number, refresh = false): Promise
     return { ok: false, error: 'Could not reach the server' };
   }
 }
+
+
+export interface ScoreboardGame {
+  id: string;
+  away: { name: string; score: number | null };
+  home: { name: string; score: number | null };
+  status: 'final' | 'live' | 'upcoming';
+}
+export interface Scoreboard {
+  week: number | null;
+  games: ScoreboardGame[];
+}
+
+/**
+ * This week's matchups for the home page scoreboard (no week param =
+ * Fleaflicker's current week). Score path game.homeScore.score.value is
+ * the same one power rankings uses; anything missing shows as a dash
+ * rather than a wrong number.
+ */
+export async function fetchCurrentScoreboard(season: number): Promise<Scoreboard | null> {
+  try {
+    const res = await fetch(`/api/fleaflicker?endpoint=FetchLeagueScoreboard&season=${season}`);
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const num = (v: any) => (typeof v === 'number' ? v : null);
+    const games: ScoreboardGame[] = (data?.games ?? []).map((g: any) => ({
+      id: String(g?.id ?? `${g?.away?.id}-${g?.home?.id}`),
+      away: { name: g?.away?.name ?? '', score: num(g?.awayScore?.score?.value) },
+      home: { name: g?.home?.name ?? '', score: num(g?.homeScore?.score?.value) },
+      status: g?.isFinalScore ? 'final' : g?.isInProgress ? 'live' : 'upcoming',
+    }));
+    const week = data?.schedulePeriod?.ordinal ?? data?.scoringPeriod?.ordinal ?? null;
+    return { week: typeof week === 'number' ? week : null, games };
+  } catch {
+    return null;
+  }
+}
