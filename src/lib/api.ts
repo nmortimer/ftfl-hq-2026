@@ -324,6 +324,7 @@ export interface PowerRankings {
   activeComponents: string[];
   rows: PowerRow[];
   matrix: Record<string, Record<string, Rec3>>;
+  draftOrder?: { rows?: { teamSlug: string; opf: number; pointsFor: number }[]; weeks?: number[]; error?: string };
   fp: {
     dynasty: FpUploadMeta | null;
     ros: FpUploadMeta | null;
