@@ -212,16 +212,22 @@ function LeagueSummary({
     [contracts, year, records]
   );
 
-  // Playoff order: win % first, points for as the tiebreaker. Until records
-  // load, keep the default order.
+  // Playoff order straight from Fleaflicker: its playoff seed (division
+  // leaders first), then its overall rank. Record then points for is only a
+  // fallback if those are ever missing.
   const standings = useMemo(() => {
+    if (!records) return rows;
     const pct = (r?: FleaflickerTeamRecord) => {
       const g = r ? r.wins + r.losses + r.ties : 0;
       return g ? (r!.wins + r!.ties / 2) / g : 0;
     };
-    return records
-      ? [...rows].sort((a, b) => pct(b.record) - pct(a.record) || (b.record?.pointsFor ?? 0) - (a.record?.pointsFor ?? 0))
-      : rows;
+    return [...rows].sort(
+      (a, b) =>
+        (a.record?.seed ?? 99) - (b.record?.seed ?? 99) ||
+        (a.record?.rank ?? 99) - (b.record?.rank ?? 99) ||
+        pct(b.record) - pct(a.record) ||
+        (b.record?.pointsFor ?? 0) - (a.record?.pointsFor ?? 0),
+    );
   }, [rows, records]);
 
   return (
@@ -235,8 +241,9 @@ function LeagueSummary({
             <table>
               <thead>
                 <tr>
-                  <th>#</th>
+                  <th>Seed</th>
                   <th>Team</th>
+                  <th>Div</th>
                   <th>Record</th>
                   <th>PF</th>
                   <th>Roster</th>
@@ -261,6 +268,7 @@ function LeagueSummary({
                         {team.name}
                       </div>
                     </td>
+                    <td>{record?.division ?? '—'}</td>
                     <td className="num">{record ? `${record.wins}-${record.losses}${record.ties ? `-${record.ties}` : ''}` : '—'}</td>
                     <td className="num">{record ? record.pointsFor.toFixed(1) : '—'}</td>
                     <td className="num">{roster}</td>
@@ -279,7 +287,7 @@ function LeagueSummary({
             </p>
           )}
           <p className="footnote">
-            Ordered by record, then points for. Taxi squad and IR contracts don't count against the $200 cap.
+            Ordered by Fleaflicker's playoff seeding, division leaders first. Taxi squad and IR contracts don't count against the $200 cap.
           </p>
         </section>
       </PowerRankingsSection>
@@ -399,8 +407,8 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
             <summary>How it's scored</summary>
             <p>
               Each factor ranks the 10 teams 1–10; the power score is the weighted average rank, so lower is better. ROS
-              strength counts most (2×), PF and all-play 1.5×, PA least (0.5×). ROS /100 rates each team's best starting
-              lineup only; dynasty /100 is the best lineup plus a little depth (top 6 bench at 30%). Factors in use:{' '}
+              strength counts most (2×), PF and all-play 1.5×, PA least (0.5×). ROS /100 rates each team's best eight
+              starters only; dynasty /100 is the best lineup plus a little depth (top 6 bench at 30%). Factors in use:{' '}
               {data ? data.activeComponents.map((k) => COMPONENT_LABELS[k] ?? k).join(', ') : '…'}
               {data && !data.last5Active && ' (last 5 kicks in at week 8)'}.
             </p>
@@ -521,7 +529,7 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
           <h2 className="section-title">Projected draft order</h2>
           <p className="section-note">
             Lowest optimal points for picks first. Optimal points is the most a team could have scored each week with its
-            best lineup from starters and bench.
+            best eight starters from the lineup and bench.
           </p>
           {data.draftOrder.error && <p className="login-error">Couldn't work out the draft order: {data.draftOrder.error}</p>}
           {data.draftOrder.rows && (
