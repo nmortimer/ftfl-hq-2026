@@ -1152,3 +1152,9 @@ td.num {
   font-family: 'Barlow Condensed', sans-serif;
   font-size: 15px;
 }
+
+.home .section-note {
+  font-size: 15px;
+  margin: -6px 0 10px;
+  max-width: 80ch;
+}
