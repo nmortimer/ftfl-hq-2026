@@ -43,9 +43,13 @@ export const WEIGHTS = {
 };
 const LAST5_START_WEEK = 8;
 
-// FTFL lineup: QB, RB, RB, WR, WR, TE, FLEX (RB/WR/TE). 1QB.
+// FTFL lineup, CONFIRMED from the league's own rosterRequirements in a real
+// FetchLeagueStandings response (starterCount 8): QB, RB, RB, WR, WR, TE,
+// and TWO RB/WR/TE flex spots. (An earlier version assumed one flex, which
+// is what made week-1 optimal points come out below a real score.)
 const LINEUP = { QB: 1, RB: 2, WR: 2, TE: 1 } as const;
 const FLEX = ['RB', 'WR', 'TE'];
+const FLEX_COUNT = 2;
 // Player value from FP overall rank, top-heavy so stars matter more than
 // a pile of depth: #1 = 100, #24 ≈ 71, #50 ≈ 48, #100 ≈ 22, #200 ≈ 5.
 const playerValue = (rank: number | undefined) => (rank ? 100 * Math.pow(0.985, rank - 1) : 0);
@@ -77,8 +81,10 @@ function bestLineup(players: { name: string; pos: string; value: number }[]) {
       if (idx >= 0) starters.push(pool.splice(idx, 1)[0]);
     }
   }
-  const flexIdx = pool.findIndex((p) => FLEX.includes(p.pos));
-  if (flexIdx >= 0) starters.push(pool.splice(flexIdx, 1)[0]);
+  for (let i = 0; i < FLEX_COUNT; i++) {
+    const flexIdx = pool.findIndex((p) => FLEX.includes(p.pos));
+    if (flexIdx >= 0) starters.push(pool.splice(flexIdx, 1)[0]);
+  }
   return { starters, bench: pool, value: starters.reduce((a, p) => a + p.value, 0) };
 }
 interface FpPlayer {
@@ -123,40 +129,65 @@ function rankTeams(values: Map<string, number>, higherIsBetter: boolean): Map<st
 
 /**
  * Optimal points for (OPF) per team for one completed week: the best legal
- * lineup (QB, RB, RB, WR, WR, TE, FLEX) from everyone who was startable —
+ * lineup (QB, RB, RB, WR, WR, TE, FLEX, FLEX) from everyone who was startable —
  * starters plus bench. Taxi and IR players are excluded (they couldn't
  * have been started).
  *
  * Boxscore shape is the one confirmed for top scorers: box.lineups[] groups
  * ("START", bench = no group key, "INJURED", "TAXI"), each slot carrying
- * .away/.home with proPlayer.position, viewingActualPoints.value, owner.id.
+ * .away/.home with proPlayer.position and viewingActualPoints.value.
+ *
+ * Players are assigned to a team by which SIDE of the boxscore they're on
+ * (away/home, known from the scoreboard), not by the slot's owner.id —
+ * the side can't change if a player is dropped or traded later.
  */
-async function weekOpf(leagueId: string, week: number, gameIds: string[], idToSlug: Map<number, string>): Promise<Record<string, number>> {
+interface WeekTeam {
+  opf: number;
+  startedSum: number;
+  started: string[]; // "Name POS pts" — only used in error messages
+}
+async function weekOpf(
+  leagueId: string,
+  week: number,
+  games: { id: string; away: string; home: string }[],
+): Promise<Record<string, WeekTeam>> {
   const boxes = await Promise.all(
-    gameIds.map(async (gameId) => {
-      const r = await fetchWithRetry(`https://www.fleaflicker.com/api/FetchLeagueBoxscore?sport=NFL&league_id=${leagueId}&fantasy_game_id=${gameId}&scoring_period=${week}`);
-      if (!r.ok) throw new Error(`Boxscore ${gameId} (week ${week}) failed (HTTP ${r.status})`);
-      return r.json();
+    games.map(async (g) => {
+      const r = await fetchWithRetry(`https://www.fleaflicker.com/api/FetchLeagueBoxscore?sport=NFL&league_id=${leagueId}&fantasy_game_id=${g.id}&scoring_period=${week}`);
+      if (!r.ok) throw new Error(`Boxscore ${g.id} (week ${week}) failed (HTTP ${r.status})`);
+      return { game: g, box: (await r.json()) as any };
     }),
   );
-  const pool = new Map<string, { name: string; pos: string; value: number }[]>();
-  for (const box of boxes as any[]) {
+  const pool = new Map<string, { name: string; pos: string; value: number; started: boolean }[]>();
+  for (const { game, box } of boxes) {
     for (const group of box?.lineups ?? []) {
       if (group?.group && group.group !== 'START') continue; // skip INJURED / TAXI
       for (const slot of group?.slots ?? []) {
         for (const sideKey of ['away', 'home'] as const) {
           const side = slot?.[sideKey];
           const player = side?.proPlayer;
-          const slug = idToSlug.get(side?.owner?.id);
-          if (!player?.nameFull || !slug) continue;
+          if (!player?.nameFull) continue;
+          const slug = game[sideKey];
           if (!pool.has(slug)) pool.set(slug, []);
-          pool.get(slug)!.push({ name: player.nameFull, pos: player.position ?? '', value: side?.viewingActualPoints?.value ?? 0 });
+          pool.get(slug)!.push({
+            name: player.nameFull,
+            pos: player.position ?? '',
+            value: side?.viewingActualPoints?.value ?? 0,
+            started: group?.group === 'START',
+          });
         }
       }
     }
   }
-  const out: Record<string, number> = {};
-  for (const [slug, players] of pool) out[slug] = Math.round(bestLineup(players).value * 100) / 100;
+  const out: Record<string, WeekTeam> = {};
+  for (const [slug, players] of pool) {
+    const starters = players.filter((p) => p.started);
+    out[slug] = {
+      opf: Math.round(bestLineup(players).value * 100) / 100,
+      startedSum: Math.round(starters.reduce((a, p) => a + p.value, 0) * 100) / 100,
+      started: starters.map((p) => `${p.name} ${p.pos || '?'} ${p.value}`),
+    };
+  }
   return out;
 }
 
@@ -165,7 +196,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const leagueId = process.env.FLEAFLICKER_LEAGUE_ID;
   if (!leagueId) return res.status(400).json({ error: 'FLEAFLICKER_LEAGUE_ID is not set on the server.' });
   const season = Number(req.query.year) || currentNflSeason();
-  const cacheKey = `ftfl:power-rankings:${season}`;
+  const cacheKey = `ftfl:power-rankings:v2:${season}`; // v2: lineup fixed to two flex spots
 
   if (req.method === 'POST') return saveFpUpload(req, res, cacheKey);
 
@@ -177,7 +208,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const idToSlug = new Map(teams.map((t) => [t.fleaflickerId, t.slug]));
 
   // ---- Fleaflicker: weekly scores + matchups ----------------------------
-  let weeks: { week: number; score: Map<string, number>; opp: Map<string, string>; gameIds: string[] }[] = [];
+  let weeks: { week: number; score: Map<string, number>; opp: Map<string, string>; games: { id: string; away: string; home: string }[] }[] = [];
   try {
     const first = await fetchWithRetry(`https://www.fleaflicker.com/api/FetchLeagueScoreboard?sport=NFL&league_id=${leagueId}&season=${season}&scoring_period=1`);
     if (!first.ok) throw new Error(`Scoreboard failed (HTTP ${first.status})`);
@@ -216,7 +247,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         opp.set(h, a);
         opp.set(a, h);
       }
-      weeks.push({ week: i + 1, score, opp, gameIds: games.map((g) => String(g.id)) });
+      weeks.push({
+        week: i + 1,
+        score,
+        opp,
+        games: games.map((g) => ({ id: String(g.id), away: idToSlug.get(g.away.id)!, home: idToSlug.get(g.home.id)! })),
+      });
     }
   } catch (err: any) {
     return res.status(502).json({ error: `Fleaflicker: ${err?.message}` });
@@ -350,15 +386,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let added = false;
     for (const w of weeks) {
       if (opfByWeek[w.week]) continue;
-      const wk = await weekOpf(leagueId, w.week, w.gameIds, idToSlug); // one week at a time — rate-limit margin
-      // Sanity check before trusting it: the best possible lineup can never
-      // score less than the lineup that was actually played.
-      const bad = slugs.find((sl) => wk[sl] == null || wk[sl] + 0.05 < w.score.get(sl)!);
-      if (bad) {
-        throw new Error(
-          `week ${w.week}: optimal points for ${bad} came out as ${wk[bad] ?? 'missing'}, below their actual ${w.score.get(bad)} — the boxscore isn't being read correctly, so no draft order is shown.`,
-        );
+      const full = await weekOpf(leagueId, w.week, w.games); // one week at a time — rate-limit margin
+      // Two checks before trusting a week, each with enough detail in the
+      // message to see the cause without another round trip:
+      //  1. the players read as started must add up to the real score
+      //  2. the best possible lineup can't score less than the real one
+      for (const sl of slugs) {
+        const t = full[sl];
+        const actual = w.score.get(sl)!;
+        if (!t) throw new Error(`week ${w.week}: no boxscore players found for ${sl}.`);
+        if (Math.abs(t.startedSum - actual) > 0.05) {
+          throw new Error(
+            `week ${w.week}, ${sl}: the starters read from the boxscore add up to ${t.startedSum}, but the real score was ${actual}. Starters read: ${t.started.join('; ')}.`,
+          );
+        }
+        if (t.opf + 0.05 < actual) {
+          throw new Error(
+            `week ${w.week}, ${sl}: best lineup came out as ${t.opf}, below the real ${actual} — a starter is in a spot the QB/RB/RB/WR/WR/TE/FLEX/FLEX lineup doesn't allow. Starters read: ${t.started.join('; ')}.`,
+          );
+        }
       }
+      const wk = Object.fromEntries(slugs.map((sl) => [sl, full[sl].opf]));
       opfByWeek[w.week] = wk;
       added = true;
     }
