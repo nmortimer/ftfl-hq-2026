@@ -528,8 +528,10 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
         <section className="roster-section">
           <h2 className="section-title">Projected draft order</h2>
           <p className="section-note">
-            Lowest optimal points for picks first. Optimal points is the most a team could have scored each week with its
-            best eight starters from the lineup and bench.
+            Lowest optimum points for picks first.{' '}
+            {data.draftOrder.source === 'computed'
+              ? "Fleaflicker's Leaders page couldn't be read, so optimum points is worked out here from each week's best eight starters."
+              : "Optimum PF comes straight from Fleaflicker's Leaders page."}
           </p>
           {data.draftOrder.error && <p className="login-error">Couldn't work out the draft order: {data.draftOrder.error}</p>}
           {data.draftOrder.rows && (
@@ -539,9 +541,9 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
                   <tr>
                     <th>Pick</th>
                     <th>Team</th>
-                    <th>Optimal PF</th>
+                    <th>Optimum PF</th>
                     <th>Actual PF</th>
-                    <th title="Actual points as a share of optimal points">Lineup efficiency</th>
+                    <th title="Actual points as a share of optimum points">Lineup efficiency</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -563,7 +565,7 @@ function PowerRankingsSection({ year, onSelectTeam, children }: { year: number; 
                         </td>
                         <td className="num">{r.opf.toFixed(1)}</td>
                         <td className="num">{r.pointsFor.toFixed(1)}</td>
-                        <td className="num">{r.opf ? `${Math.round((r.pointsFor / r.opf) * 100)}%` : '—'}</td>
+                        <td className="num">{r.opf ? `${((r.pointsFor / r.opf) * 100).toFixed(1)}%` : '—'}</td>
                       </tr>
                     );
                   })}
