@@ -5,6 +5,9 @@
     },
     "api/compute-league-history.ts": {
       "maxDuration": 60
+    },
+    "api/power-rankings.ts": {
+      "maxDuration": 60
     }
   },
   "headers": [
