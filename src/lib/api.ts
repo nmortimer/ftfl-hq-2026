@@ -324,7 +324,82 @@ export interface PowerRankings {
   activeComponents: string[];
   rows: PowerRow[];
   matrix: Record<string, Record<string, Rec3>>;
-  fp: { ok: boolean; error?: string; warning?: string; playerCounts?: { dynasty: number; ros: number } };
+  fp: {
+    dynasty: FpUploadMeta | null;
+    ros: FpUploadMeta | null;
+    error?: string;
+    unmatched?: Record<string, string[]>;
+  };
+}
+export interface FpUploadMeta {
+  uploadedAt: number;
+  fileName: string;
+  count: number;
+}
+export type FpKind = 'dynasty' | 'ros';
+
+/**
+ * Parses a FantasyPros "ALL" rankings CSV export. Confirmed against real
+ * exports (Oct 2026): header row has "RK", "PLAYER NAME", "POS" (e.g. "WR12");
+ * tier-break rows have an empty RK and are skipped. Dynasty exports have an
+ * AGE column, ROS exports have SOS SEASON — used to catch the wrong file.
+ */
+export function parseFpCsv(text: string, kind: FpKind): { players: { name: string; rank: number; pos: string }[]; error?: string } {
+  const rows = text
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .map((line) => {
+      const out: string[] = [];
+      let cur = '';
+      let q = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (q) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+          else if (ch === '"') q = false;
+          else cur += ch;
+        } else if (ch === '"') q = true;
+        else if (ch === ',') { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out.map((c) => c.trim());
+    });
+  const header = rows[0]?.map((h) => h.toUpperCase()) ?? [];
+  const iRk = header.indexOf('RK');
+  const iName = header.indexOf('PLAYER NAME');
+  const iPos = header.indexOf('POS');
+  if (iRk < 0 || iName < 0 || iPos < 0) return { players: [], error: 'Not a FantasyPros rankings export — missing RK / PLAYER NAME / POS columns.' };
+  const isDynasty = header.includes('AGE');
+  const isRos = header.includes('SOS SEASON');
+  if (kind === 'dynasty' && isRos) return { players: [], error: 'That looks like the ROS export — use the ROS upload for it.' };
+  if (kind === 'ros' && isDynasty) return { players: [], error: 'That looks like the Dynasty export — use the Dynasty upload for it.' };
+  const players = rows
+    .slice(1)
+    .map((r) => ({ name: r[iName] ?? '', rank: Number(r[iRk]), pos: (r[iPos] ?? '').replace(/\d+$/, '') }))
+    .filter((p) => p.name && Number.isFinite(p.rank) && p.rank > 0);
+  return { players };
+}
+
+export async function uploadFpRankings(
+  year: number,
+  kind: FpKind,
+  fileName: string,
+  players: { name: string; rank: number; pos: string }[],
+): Promise<{ ok: boolean; count?: number; error?: string }> {
+  try {
+    const res = await fetch(`/api/power-rankings?year=${year}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, fileName, players }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: body.error || `Upload failed (${res.status})` };
+    return { ok: true, count: body.count };
+  } catch {
+    return { ok: false, error: 'Could not reach the server' };
+  }
 }
 
 /** api/power-rankings.ts — cached 3h server-side; refresh forces a rebuild. */
