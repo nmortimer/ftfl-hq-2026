@@ -191,6 +191,49 @@ async function weekOpf(
   return out;
 }
 
+/**
+ * Fleaflicker's own "Optimum PF", read from the league's public Leaders
+ * page (/nfl/leagues/<id>/leaders). It isn't in the JSON API (checked the
+ * real FetchLeagueStandings response), so this reads the HTML table.
+ *
+ * Built from the real page as fetched Oct 7 2026: one row per team, the
+ * last column reading like "482.4 (73.31%)", with PF in the column before
+ * it. To survive layout changes it doesn't count columns — it finds the
+ * cell with a known team name and the cell shaped "number (percent%)".
+ * Returns null (so the caller falls back to computing OPF) unless all 10
+ * teams are found with an optimum at or above their points for.
+ */
+export function parseLeadersHtml(html: string): Record<string, { opf: number; pointsFor: number }> | null {
+  const text = (cell: string) =>
+    cell
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+  const num = (v: string) => Number(v.replace(/,/g, ''));
+  const out: Record<string, { opf: number; pointsFor: number }> = {};
+  for (const row of html.match(/<tr[\s\S]*?<\/tr>/gi) ?? []) {
+    const cells = (row.match(/<t[dh][\s\S]*?<\/t[dh]>/gi) ?? []).map(text);
+    const team = teams.find((t) => cells.some((c) => c.toLowerCase() === t.name.toLowerCase()));
+    if (!team) continue;
+    const i = cells.findIndex((c) => /^[\d,]+(\.\d+)?\s*\(\s*[\d.]+%\s*\)$/.test(c));
+    if (i < 1) continue;
+    const opf = num(cells[i].split('(')[0].trim());
+    const pointsFor = num(cells[i - 1]);
+    if (!Number.isFinite(opf) || !Number.isFinite(pointsFor) || opf + 0.05 < pointsFor) continue;
+    out[team.slug] = { opf, pointsFor };
+  }
+  return Object.keys(out).length === teams.length ? out : null;
+}
+
+async function fetchLeadersOpf(leagueId: string, season: number) {
+  const r = await fetchWithRetry(`https://www.fleaflicker.com/nfl/leagues/${leagueId}/leaders?season=${season}`);
+  if (!r.ok) return null;
+  return parseLeadersHtml(await r.text());
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'no-store');
   const leagueId = process.env.FLEAFLICKER_LEAGUE_ID;
@@ -379,7 +422,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // ---- Projected draft order: reverse optimal points for ------------------
   // Completed weeks never change, so each week's OPF is computed once and
   // kept in Redis; a normal load only fetches boxscores for a new week.
-  let draftOrder: { rows?: { teamSlug: string; opf: number; pointsFor: number }[]; weeks?: number[]; error?: string } = {};
+  let draftOrder: {
+    rows?: { teamSlug: string; opf: number; pointsFor: number }[];
+    weeks?: number[];
+    source?: 'fleaflicker' | 'computed';
+    error?: string;
+  } = {};
+  // First choice: Fleaflicker's own Optimum PF from its Leaders page — the
+  // number the league already sees, in one request. Only if that page can't
+  // be read does it fall back to computing OPF from boxscores below.
+  const leaders = await fetchLeadersOpf(leagueId, season).catch(() => null);
+  if (leaders) {
+    draftOrder = {
+      source: 'fleaflicker',
+      rows: slugs.map((sl) => ({ teamSlug: sl, ...leaders[sl] })).sort((a, b) => a.opf - b.opf), // lowest OPF picks first
+    };
+  } else
   try {
     const opfKey = `ftfl:opf:${season}`;
     const opfByWeek = (await getJSON<Record<number, Record<string, number>>>(opfKey)) ?? {};
@@ -413,6 +471,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (added) await setJSON(opfKey, opfByWeek);
     if (weeks.length > 0) {
       draftOrder = {
+        source: 'computed',
         weeks: weeks.map((w) => w.week),
         rows: slugs
           .map((sl) => ({
