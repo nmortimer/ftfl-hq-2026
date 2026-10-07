@@ -121,6 +121,45 @@ function rankTeams(values: Map<string, number>, higherIsBetter: boolean): Map<st
   return ranks;
 }
 
+/**
+ * Optimal points for (OPF) per team for one completed week: the best legal
+ * lineup (QB, RB, RB, WR, WR, TE, FLEX) from everyone who was startable —
+ * starters plus bench. Taxi and IR players are excluded (they couldn't
+ * have been started).
+ *
+ * Boxscore shape is the one confirmed for top scorers: box.lineups[] groups
+ * ("START", bench = no group key, "INJURED", "TAXI"), each slot carrying
+ * .away/.home with proPlayer.position, viewingActualPoints.value, owner.id.
+ */
+async function weekOpf(leagueId: string, week: number, gameIds: string[], idToSlug: Map<number, string>): Promise<Record<string, number>> {
+  const boxes = await Promise.all(
+    gameIds.map(async (gameId) => {
+      const r = await fetchWithRetry(`https://www.fleaflicker.com/api/FetchLeagueBoxscore?sport=NFL&league_id=${leagueId}&fantasy_game_id=${gameId}&scoring_period=${week}`);
+      if (!r.ok) throw new Error(`Boxscore ${gameId} (week ${week}) failed (HTTP ${r.status})`);
+      return r.json();
+    }),
+  );
+  const pool = new Map<string, { name: string; pos: string; value: number }[]>();
+  for (const box of boxes as any[]) {
+    for (const group of box?.lineups ?? []) {
+      if (group?.group && group.group !== 'START') continue; // skip INJURED / TAXI
+      for (const slot of group?.slots ?? []) {
+        for (const sideKey of ['away', 'home'] as const) {
+          const side = slot?.[sideKey];
+          const player = side?.proPlayer;
+          const slug = idToSlug.get(side?.owner?.id);
+          if (!player?.nameFull || !slug) continue;
+          if (!pool.has(slug)) pool.set(slug, []);
+          pool.get(slug)!.push({ name: player.nameFull, pos: player.position ?? '', value: side?.viewingActualPoints?.value ?? 0 });
+        }
+      }
+    }
+  }
+  const out: Record<string, number> = {};
+  for (const [slug, players] of pool) out[slug] = Math.round(bestLineup(players).value * 100) / 100;
+  return out;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Cache-Control', 'no-store');
   const leagueId = process.env.FLEAFLICKER_LEAGUE_ID;
@@ -138,7 +177,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const idToSlug = new Map(teams.map((t) => [t.fleaflickerId, t.slug]));
 
   // ---- Fleaflicker: weekly scores + matchups ----------------------------
-  let weeks: { week: number; score: Map<string, number>; opp: Map<string, string> }[] = [];
+  let weeks: { week: number; score: Map<string, number>; opp: Map<string, string>; gameIds: string[] }[] = [];
   try {
     const first = await fetchWithRetry(`https://www.fleaflicker.com/api/FetchLeagueScoreboard?sport=NFL&league_id=${leagueId}&season=${season}&scoring_period=1`);
     if (!first.ok) throw new Error(`Scoreboard failed (HTTP ${first.status})`);
@@ -177,7 +216,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         opp.set(h, a);
         opp.set(a, h);
       }
-      weeks.push({ week: i + 1, score, opp });
+      weeks.push({ week: i + 1, score, opp, gameIds: games.map((g) => String(g.id)) });
     }
   } catch (err: any) {
     return res.status(502).json({ error: `Fleaflicker: ${err?.message}` });
@@ -301,6 +340,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     fp.error = err?.message;
   }
 
+  // ---- Projected draft order: reverse optimal points for ------------------
+  // Completed weeks never change, so each week's OPF is computed once and
+  // kept in Redis; a normal load only fetches boxscores for a new week.
+  let draftOrder: { rows?: { teamSlug: string; opf: number; pointsFor: number }[]; weeks?: number[]; error?: string } = {};
+  try {
+    const opfKey = `ftfl:opf:${season}`;
+    const opfByWeek = (await getJSON<Record<number, Record<string, number>>>(opfKey)) ?? {};
+    let added = false;
+    for (const w of weeks) {
+      if (opfByWeek[w.week]) continue;
+      const wk = await weekOpf(leagueId, w.week, w.gameIds, idToSlug); // one week at a time — rate-limit margin
+      // Sanity check before trusting it: the best possible lineup can never
+      // score less than the lineup that was actually played.
+      const bad = slugs.find((sl) => wk[sl] == null || wk[sl] + 0.05 < w.score.get(sl)!);
+      if (bad) {
+        throw new Error(
+          `week ${w.week}: optimal points for ${bad} came out as ${wk[bad] ?? 'missing'}, below their actual ${w.score.get(bad)} — the boxscore isn't being read correctly, so no draft order is shown.`,
+        );
+      }
+      opfByWeek[w.week] = wk;
+      added = true;
+    }
+    if (added) await setJSON(opfKey, opfByWeek);
+    if (weeks.length > 0) {
+      draftOrder = {
+        weeks: weeks.map((w) => w.week),
+        rows: slugs
+          .map((sl) => ({
+            teamSlug: sl,
+            opf: Math.round(weeks.reduce((a, w) => a + opfByWeek[w.week][sl], 0) * 100) / 100,
+            pointsFor: Math.round(PF.get(sl)! * 100) / 100,
+          }))
+          .sort((a, b) => a.opf - b.opf), // lowest OPF picks first
+      };
+    }
+  } catch (err: any) {
+    draftOrder = { error: err?.message };
+  }
+
   // ---- Power score --------------------------------------------------------
   const components: { key: keyof typeof WEIGHTS; values: Map<string, number>; higherIsBetter: boolean; active: boolean }[] = [
     { key: 'wins', values: W, higherIsBetter: true, active: true },
@@ -361,6 +439,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     weights: WEIGHTS,
     rows,
     matrix,
+    draftOrder,
     fp: { dynasty: fp.dynasty, ros: fp.ros, error: fp.error, unmatched: fp.unmatched },
   };
   await setJSON(cacheKey, result);
