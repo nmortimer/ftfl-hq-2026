@@ -44,6 +44,11 @@ export interface FleaflickerTeamRecord {
   losses: number;
   ties: number;
   pointsFor: number;
+  /** Playoff seed (recordPostseason.rank) — division leaders first. */
+  seed?: number;
+  /** Overall standings rank (recordOverall.rank). */
+  rank?: number;
+  division?: string;
 }
 
 /**
@@ -72,6 +77,13 @@ export async function fetchFleaflickerStandings(season: number): Promise<Fleafli
           losses: entry.recordOverall?.losses ?? 0,
           ties: entry.recordOverall?.ties ?? 0,
           pointsFor: entry.pointsFor?.value ?? 0,
+          // Confirmed in a real response (Oct 2026): two divisions (East/West);
+          // recordOverall.rank runs 1-10 by record then PF, while
+          // recordPostseason.rank puts the division leaders first (Elkhart
+          // was 3rd overall but 2nd here as East leader) — the playoff seeding.
+          seed: typeof entry.recordPostseason?.rank === 'number' ? entry.recordPostseason.rank : undefined,
+          rank: typeof entry.recordOverall?.rank === 'number' ? entry.recordOverall.rank : undefined,
+          division: division.name ?? undefined,
         });
       }
     }
