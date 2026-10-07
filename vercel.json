@@ -1,0 +1,76 @@
+{
+  "functions": {
+    "api/compute-top-scorers.ts": {
+      "maxDuration": 60
+    },
+    "api/compute-league-history.ts": {
+      "maxDuration": 60
+    }
+  },
+  "headers": [
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/index.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate, max-age=0"
+        }
+      ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/compute-league-history?mode=current",
+      "schedule": "0 12 * * 2"
+    },
+    {
+      "path": "/api/compute-top-scorers?mode=current",
+      "schedule": "30 12 * * 2"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/restore-seed-data",
+      "destination": "/api/admin?action=restore-seed-data"
+    },
+    {
+      "source": "/api/merge-new-seed-contracts",
+      "destination": "/api/admin?action=merge-new-seed-contracts"
+    },
+    {
+      "source": "/api/repair-taxi-ir",
+      "destination": "/api/admin?action=repair-taxi-ir"
+    },
+    {
+      "source": "/api/fp-raw",
+      "destination": "/api/power-rankings?debug=fp"
+    }
+  ]
+}
