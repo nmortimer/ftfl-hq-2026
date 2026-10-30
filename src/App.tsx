@@ -747,25 +747,34 @@ function ActivityReview({
     // being cut (Jordan Mason: Soldiers buyout through 2026, now on Osos).
     contracts.find((c) => c.kind !== 'buyout' && normalizePlayerName(c.playerName) === normalizePlayerName(playerName) && salaryInYear(c, year) != null);
 
-  const logItems = (activity ?? []).filter((a) => a.kind === 'transaction' && a.playerName && !findContract(a.playerName));
-  // Rostered players with no contract anywhere, from the roster check —
-  // catches pickups older than the transaction log's first page.
-  const logNames = new Set(logItems.map((a) => normalizePlayerName(a.playerName!)));
-  const rosterItems: FleaflickerActivityItem[] = (rosterCheck?.unsigned ?? [])
-    .filter((u) => !logNames.has(normalizePlayerName(u.playerName)) && !findContract(u.playerName))
-    .map((u) => ({
-      raw: null,
-      timeEpochMilli: 0,
-      kind: 'transaction' as const,
-      playerName: u.playerName,
-      position: u.position,
-      isTaxi: u.isTaxi,
-      isIR: u.isIR,
-      teamName: teamBySlug(u.team).name,
-      description: `On ${teamBySlug(u.team).name}'s Fleaflicker roster${u.isTaxi ? ' (TAXI)' : u.isIR ? ' (IR)' : ''}, no contract on file`,
-    }));
-  const faItems = [...logItems, ...rosterItems];
-  const otherItems = (activity ?? []).filter((a) => !logItems.includes(a) && a.kind !== 'drop');
+  // Who needs a contract comes ONLY from Fleaflicker's current rosters
+  // (the roster check): rostered today, no contract on file. The
+  // transaction log is used just for the description. Real incident:
+  // Calvin Ridley's TRANSACTION_TRADE log entry kept being offered as an
+  // Osos pickup after he'd left the team; adding and then cutting him
+  // twice left two $1 buyouts. Players who were traded away or dropped
+  // aren't on a roster, so they can't show up here anymore.
+  const logByName = new Map(
+    (activity ?? []).filter((a) => a.kind === 'transaction' && a.playerName).map((a) => [normalizePlayerName(a.playerName!), a]),
+  );
+  const faItems: FleaflickerActivityItem[] = (rosterCheck?.unsigned ?? [])
+    .filter((u) => !findContract(u.playerName))
+    .map((u) => {
+      const log = logByName.get(normalizePlayerName(u.playerName));
+      const where = `On ${teamBySlug(u.team).name}'s Fleaflicker roster${u.isTaxi ? ' (TAXI)' : u.isIR ? ' (IR)' : ''}, no contract on file`;
+      return {
+        raw: log?.raw ?? null,
+        timeEpochMilli: log?.timeEpochMilli ?? 0,
+        kind: 'transaction' as const,
+        playerName: u.playerName,
+        position: u.position,
+        isTaxi: u.isTaxi,
+        isIR: u.isIR,
+        teamName: teamBySlug(u.team).name,
+        description: log ? `${where} — ${log.description}` : where,
+      };
+    });
+  const otherItems = (activity ?? []).filter((a) => a.kind !== 'drop');
   const mismatches = (rosterCheck?.mismatches ?? []).filter((m) => contracts.some((c) => c.id === m.contractId && c.team === m.sheetTeam && c.kind !== 'buyout'));
 
   type Draft = { team: string; position: string; cost: number; length: number; deal: 'fa' | 'rookie'; taxi: boolean; ir: boolean };
@@ -973,7 +982,7 @@ function ActivityReview({
           </button>
         </p>
         {rosterCheckError && <p className="login-error">{rosterCheckError}</p>}
-        {rosterCheck && mismatches.length === 0 && rosterCheck.notOnRoster.length === 0 && rosterItems.length === 0 && logItems.length === 0 && (
+        {rosterCheck && mismatches.length === 0 && rosterCheck.notOnRoster.length === 0 && faItems.length === 0 && (
           <p className="muted">All 10 teams match Fleaflicker.</p>
         )}
         {mismatches.map((m) => (
@@ -1026,7 +1035,7 @@ function ActivityReview({
         </p>
       )}
 
-      {activity && faItems.length === 0 && !loadError && (
+      {rosterCheck && faItems.length === 0 && (
         <p className="muted">No pending free agent pickups without a contract on file — you're caught up.</p>
       )}
 
@@ -1170,13 +1179,15 @@ function TeamPage({
     setContracts(contracts.map((c) => (c.id === id ? ({ ...c, ...patch } as Contract) : c)));
   }
 
-  // For contracts entered in this app by mistake (ids "fa-…"/"new-…") —
-  // removes the row outright. Not a cut: no buyout is created. Imported
-  // sheet contracts can't be deleted this way.
+  // Removes a row outright — for entries made by mistake: contracts added
+  // in this app (ids "fa-…"/"new-…") and any buyout (e.g. from cutting a
+  // player who was added by mistake). Not a cut: no buyout is created.
+  // Imported sheet contracts can't be deleted this way.
   function deleteMistake(id: string) {
     const c = contracts.find((x) => x.id === id);
     if (!c) return;
-    if (!confirm(`Delete ${c.playerName}'s contract entirely? Use this only for an entry made by mistake — no buyout is created. Remember to Save.`)) return;
+    const what = c.kind === 'buyout' ? `${c.playerName}'s buyout` : `${c.playerName}'s contract`;
+    if (!confirm(`Delete ${what} entirely? Use this only for an entry made by mistake — the cap hit goes away and no buyout is created. Remember to Save.`)) return;
     setContracts(contracts.filter((x) => x.id !== id));
   }
 
@@ -1462,6 +1473,7 @@ function TeamPage({
                   <th>Player</th>
                   <th>Buyout cost in {year}</th>
                   <th>Years left</th>
+                  {editMode && <th>Edit</th>}
                 </tr>
               </thead>
               <tbody>
@@ -1473,6 +1485,13 @@ function TeamPage({
                     </td>
                     <td className="num">{money(salary)}</td>
                     <td className="num">{yearsLeft}</td>
+                    {editMode && (
+                      <td className="edit-actions">
+                        <button className="btn-tiny" onClick={() => deleteMistake(contract.id)} title="Remove a buyout created by mistake">
+                          Delete
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
