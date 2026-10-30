@@ -1153,6 +1153,7 @@ function TeamPage({
         salary: salaryInYear(c, year),
         yearsLeft: yearsRemaining(c, year),
         penalty: cutPenalty(c, year),
+        buyout: buyoutScheduleFromCut(c, year),
       })),
     [teamContracts, year]
   );
@@ -1242,12 +1243,12 @@ function TeamPage({
           <th>Contract</th>
           <th>Salary in {year}</th>
           <th>Years left</th>
-          <th>Cut penalty if cut now</th>
+          <th>Cut cost this year</th>
           {editMode && <th>Edit</th>}
         </tr>
       </thead>
       <tbody>
-        {rows.map(({ contract, salary, yearsLeft, penalty }) => {
+        {rows.map(({ contract, salary, yearsLeft, buyout }) => {
           const signed = startYear(contract);
           const resignYear = endYear(contract) + 1;
           const resignCost = projectedResignCost(contract);
@@ -1279,7 +1280,7 @@ function TeamPage({
               </td>
               <td className="num">{money(salary)}</td>
               <td className="num">{yearsLeft}</td>
-              <td className="num">{money(penalty)}</td>
+              <td className="num">{money(buyout[year] ?? null)}</td>
               {editMode && (
                 <td className="edit-actions">
                   <button className="btn-tiny" onClick={() => toggleTaxiThisYear(contract)}>
